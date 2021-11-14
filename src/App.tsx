@@ -1,23 +1,15 @@
-import React from 'react';
+import React, { useState } from 'react';
 import logo from './logo.svg';
 import './App.css';
+import {DemoAccount} from './demo'
 
 function App() {
+  const [period, setPeriod] = useState(0)
   return (
     <div className="App">
       <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.tsx</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
+        <img src={logo} className="App-logo" alt="logo" style={{animation: `App-logo-spin infinite ${period}ms linear`}} />
+        <DemoAccount rate={(n:number) =>setPeriod(n)}></DemoAccount>
       </header>
     </div>
   );
