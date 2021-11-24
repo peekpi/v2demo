@@ -3,7 +3,9 @@ import { useEagerConnect } from "./hooks";
 import { MetaMask } from "./wallet";
 import { ethers, BigNumber } from "ethers";
 import {
+  getMktSellAmount,
   initContract,
+  optimalDepositA,
   strategyAddTwoData,
   strategyClosePartData,
   strategyWithdrawData,
@@ -15,9 +17,11 @@ import {
   Dropdown,
   FormControl,
   Table,
+  Navbar,
 } from "react-bootstrap";
 
 import { useEffect, useState } from "react";
+import { LensV2 } from "./typechain";
 
 type WorkData = {
   orderid: string;
@@ -68,6 +72,9 @@ type Faucet = {
   amount: string;
 };
 
+type UnPromise<T> = T extends Promise<infer U> ? U : T;
+type WorkerInfo = UnPromise<ReturnType<LensV2["getWorkerInfo"]>>;
+
 const openPos = ethers.constants.MaxUint256.toHexString();
 let periodMs = 100000;
 export function DemoAccount(props: { rate: any }) {
@@ -80,6 +87,7 @@ export function DemoAccount(props: { rate: any }) {
     workers: new Map<string, string>(),
     workerPair: new Map<string, number[]>(),
   } as OrderbookInfo);
+  const [workerInfos, setWorkerInfos] = useState([] as WorkerInfo[]);
   const [workData, setWorkData] = useState({
     orderid: openPos,
     strategyData1: [""],
@@ -99,7 +107,9 @@ export function DemoAccount(props: { rate: any }) {
       const ether = new ethers.providers.Web3Provider(provider);
       setContracts(initContract(ether.getSigner()));
       const tokens = [] as typeof orderbookInfo.tokens;
+
       for (const token of contracts.tokens) {
+        console.log('token:', token.address)
         tokens.push({
           decimals: Number(await token.decimals()),
           symbol: await token.symbol(),
@@ -115,11 +125,15 @@ export function DemoAccount(props: { rate: any }) {
           contracts.tokens.findIndex((token) => token.address == token1),
         ]);
       }
+      const workerInfos = await contracts.lens.getWorkerInfos(
+        contracts.workers.map((worker) => worker.address)
+      );
+      setWorkerInfos(workerInfos);
       orderbookInfo.tokens = tokens;
       orderbookInfo.orderLength = Number(
         await contracts.orderbook.orderLength()
       );
-      periodMs /= orderbookInfo.orderLength;
+      periodMs /= Math.max(orderbookInfo.orderLength, 10);
       props.rate(periodMs);
       setOrderbookInfo({ ...orderbookInfo });
     })();
@@ -152,15 +166,15 @@ export function DemoAccount(props: { rate: any }) {
     setWorkData({ ...workData });
   }
 
-  async function dowork() {
+  function getWorkParams() {
     const toDecimals = (amount: string, decimals: number) =>
       ethers.utils.parseUnits(amount, decimals);
     const decimals0 = orderbookInfo.tokens[workData.token0].decimals;
     const decimals1 = orderbookInfo.tokens[workData.token1].decimals;
-
     const tokenParams = [
       {
         token: contracts.tokens[workData.token0],
+        symbol: orderbookInfo.tokens[workData.token0].symbol,
         decimals: decimals0,
         amount: toDecimals(workData.amount0, decimals0),
         debt: toDecimals(workData.debt0, decimals0),
@@ -169,6 +183,7 @@ export function DemoAccount(props: { rate: any }) {
       {
         token: contracts.tokens[workData.token1],
         decimals: decimals1,
+        symbol: orderbookInfo.tokens[workData.token1].symbol,
         amount: toDecimals(workData.amount1, decimals1),
         debt: toDecimals(workData.debt1, decimals1),
         maxReturn: toDecimals(workData.maxReturn1, decimals1),
@@ -181,30 +196,64 @@ export function DemoAccount(props: { rate: any }) {
       pair.reverse();
     }
     const worker = orderbookInfo.workers.get(pair.join("")) as string;
-    let strategyData: Buffer = Buffer.alloc(0);
+    const zero = BigNumber.from(0);
+    const strategyDatas = {
+      strategyData1: zero,
+      strategyData2: [zero, zero],
+      strategyData3: zero,
+    };
+    try {
+      if (workData.strategyType == 1) {
+        strategyDatas.strategyData1 = toDecimals(workData.strategyData1[0], 18);
+      }
+
+      if (workData.strategyType == 2) {
+        const strategyData2 = [...workData.strategyData2];
+        if (isReverse) strategyData2.reverse();
+        strategyDatas.strategyData2 = [
+          toDecimals(strategyData2[0], tokenParams[0].decimals),
+          toDecimals(strategyData2[1], tokenParams[1].decimals),
+        ];
+      }
+      if (workData.strategyType == 3) {
+        strategyDatas.strategyData3 = toDecimals(workData.strategyData3[0], 18);
+      }
+    } catch (e) {}
+    return {
+      worker,
+      tokenParams,
+      strategyDatas,
+    };
+  }
+
+  async function dowork() {
+    const { worker, tokenParams, strategyDatas } = getWorkParams();
+
+    let strategyData = Buffer.alloc(0);
+
     if (workData.strategyType == 1) {
-      strategyData = strategyAddTwoData(
-        toDecimals(workData.strategyData1[0], 18)
-      );
+      strategyData = strategyAddTwoData(strategyDatas.strategyData1);
     }
 
     if (workData.strategyType == 2) {
-      const strategyData2 = [...workData.strategyData2];
-      if (isReverse) strategyData2.reverse();
       strategyData = strategyWithdrawData(
-        toDecimals(strategyData2[0], tokenParams[0].decimals),
-        toDecimals(strategyData2[1], tokenParams[1].decimals)
+        strategyDatas.strategyData2[0],
+        strategyDatas.strategyData2[1]
       );
     }
     if (workData.strategyType == 3) {
-      strategyData = strategyClosePartData(
-        toDecimals(workData.strategyData3[0], 18)
-      );
+      strategyData = strategyClosePartData(strategyDatas.strategyData3);
     }
+
     const orderbook = contracts.orderbook;
     const account = context.account as string;
 
+    let nativeAmount = ethers.constants.Zero;
     for (const tokenParam of tokenParams) {
+      if(tokenParam.token.address == contracts.wnative.address) {
+        nativeAmount = tokenParam.amount;
+        continue;
+      }
       const allowance = await tokenParam.token.allowance(
         account,
         orderbook.address
@@ -226,7 +275,8 @@ export function DemoAccount(props: { rate: any }) {
       p1.debt,
       p0.maxReturn,
       p1.maxReturn,
-      strategyData
+      strategyData,
+      {value:nativeAmount}
     );
   }
 
@@ -277,10 +327,10 @@ export function DemoAccount(props: { rate: any }) {
         ...workData,
         token0: tokenXs[0],
         token1: tokenXs[1],
-        amount0: '0',
-        debt0: '0',
-        amount1: '0',
-        debt1: '0',
+        amount0: "0",
+        debt0: "0",
+        amount1: "0",
+        debt1: "0",
         maxReturn0: ethers.utils.formatUnits(
           _orderInfo.debt0,
           tokenInfos[0].decimals
@@ -327,10 +377,13 @@ export function DemoAccount(props: { rate: any }) {
 
   return (
     <div>
+      <Button variant="link" href="https://pancake.kiemtienonline360.com/#/swap" target="_blank">Goto SWAP</Button>
       {!active ? (
         <Button onClick={connect}>connect</Button>
       ) : (
-        <p>account:{context.account}</p>
+        <Navbar expand="lg" variant="dark">
+          account: {context.account}
+        </Navbar>
       )}
       <div>
         <InputGroup className="mb-3">
@@ -371,14 +424,14 @@ export function DemoAccount(props: { rate: any }) {
           </DropdownButton>
           <FormControl
             placeholder="增加本金"
-            value = {workData.amount0}
+            value={workData.amount0}
             onChange={(e) =>
               setWorkData({ ...workData, amount0: e.target.value })
             }
           />
           <FormControl
             placeholder="增加债务"
-            value = {workData.debt0}
+            value={workData.debt0}
             onChange={(e) =>
               setWorkData({ ...workData, debt0: e.target.value })
             }
@@ -405,14 +458,14 @@ export function DemoAccount(props: { rate: any }) {
           </DropdownButton>
           <FormControl
             placeholder="增加本金"
-            value = {workData.amount1}
+            value={workData.amount1}
             onChange={(e) =>
               setWorkData({ ...workData, amount1: e.target.value })
             }
           />
           <FormControl
             placeholder="增加债务"
-            value = {workData.debt1}
+            value={workData.debt1}
             onChange={(e) =>
               setWorkData({ ...workData, debt1: e.target.value })
             }
@@ -455,6 +508,9 @@ export function DemoAccount(props: { rate: any }) {
                 })
               }
             />
+            <InputGroup.Text>
+              {orderbookInfo.tokens[workData.token0]?.symbol}
+            </InputGroup.Text>
             <FormControl
               placeholder="至少得到token1数量"
               value={workData.strategyData2[0]}
@@ -465,6 +521,9 @@ export function DemoAccount(props: { rate: any }) {
                 })
               }
             />
+            <InputGroup.Text>
+              {orderbookInfo.tokens[workData.token1]?.symbol}
+            </InputGroup.Text>
           </InputGroup>
           <InputGroup className="mb-3">
             <InputGroup.Radio
@@ -480,21 +539,135 @@ export function DemoAccount(props: { rate: any }) {
               }
             />
           </InputGroup>
+          {orderInfo.orderid == workData.orderid ? (
+            <InputGroup>
+              <InputGroup.Text id="basic-addon1">减仓细节</InputGroup.Text>
+              {orderInfo.tokens.map((token) => {
+                const lpAmount = orderInfo.lpAmount.gt(0)
+                  ? orderInfo.lpAmount
+                  : 1;
+                const amount = ethers.utils
+                  .parseEther(workData.strategyData3[0])
+                  .mul(token.amount)
+                  .div(lpAmount);
+                return [
+                  <FormControl
+                    disabled
+                    placeholder="减仓token0数量"
+                    value={ethers.utils.formatUnits(amount, token.decimals)}
+                  />,
+                  <Button>{token.name}</Button>,
+                ];
+              })}
+            </InputGroup>
+          ) : undefined}
         </div>
-        <Button onClick={work}>下单</Button>
-        {"   "}
-        <Button variant="danger" onClick={kill}>
-          清算
-        </Button>
-        {"   "}
-        <Button variant="info" onClick={getOrder}>
-          获取订单
-        </Button>
-        {"   "}
-        <Button variant="warning" onClick={getRewards}>
-          领取flux奖励
-        </Button>
-        <p></p>
+        {(() => {
+          if (!workData.debt0) return null;
+          if (!workData.amount0) return null;
+          if (!workData.maxReturn0) return null;
+          if (!workData.amount1) return null;
+          if (!workData.debt1) return null;
+          if (!workData.maxReturn1) return null;
+          const { worker, tokenParams, strategyDatas } = getWorkParams();
+          const info =
+            workerInfos[
+              contracts.workers.findIndex(
+                (workerC) => workerC.address == worker
+              )
+            ];
+          const zero = BigNumber.from(0);
+          let debtA = tokenParams[0].debt;
+          let totalA = tokenParams[0].amount.add(debtA);
+          let debtB = tokenParams[1].debt;
+          let totalB = tokenParams[1].amount.add(debtB);
+          let backA = zero;
+          let backB = zero;
+          if (workData.orderid == orderInfo.orderid) {
+            debtA = debtA.add(orderInfo.tokens[0].debt);
+            totalA = totalA.add(orderInfo.tokens[0].amount);
+            debtB = debtB.add(orderInfo.tokens[1].debt);
+            totalB = totalB.add(orderInfo.tokens[1].amount);
+          }
+          let swapAmt = zero;
+          let reverse: Boolean = false;
+          let valueDebt = zero;
+          let valueHealth = zero;
+          let ratio = 0;
+          if (workData.strategyType == 1) {
+            [swapAmt, reverse] = optimalDepositA(
+              totalA,
+              totalB,
+              info.r0,
+              info.r1
+            );
+            const rx = [info.r0, info.r1];
+            if (reverse) rx.reverse();
+            const outAmt = getMktSellAmount(swapAmt, rx[0], rx[1]);
+            const path = [swapAmt, BigNumber.from(0).sub(outAmt)];
+            if (reverse) path.reverse();
+            valueDebt = getMktSellAmount(
+              debtA,
+              info.r0.add(path[0]),
+              info.r1.add(path[1])
+            ).add(debtB);
+            valueHealth = getMktSellAmount(
+              totalA.add(path[0]),
+              info.r0.add(path[0]),
+              info.r1.add(path[1])
+            ).add(totalB.add(path[1]));
+            ratio = valueHealth.gt(0)
+              ? valueDebt.mul(10000).div(valueHealth).toNumber() / 100
+              : 0;
+          }else if(workData.strategyType == 2) {
+            if(totalA.lt(debtA)) {
+              reverse = true;
+            }
+            if (totalB.lt(debtB)) {
+              reverse = false;
+            }
+          }else if (workData.strategyType == 3) {
+            backA = strategyDatas.strategyData3.mul(info.r0).div(info.lpTotalSupply)
+            backB = strategyDatas.strategyData3.mul(info.r1).div(info.lpTotalSupply)
+          }
+
+          return (
+            <div>
+              <Navbar expand="lg" variant="dark">
+                债务率：{ratio}%
+              </Navbar>
+              <Navbar expand="lg" variant="dark">
+                卖出:
+                {ethers.utils.formatUnits(
+                  swapAmt,
+                  tokenParams[reverse ? 1 : 0].decimals
+                )}{" "}
+                {tokenParams[reverse ? 1 : 0].symbol} 手续费:
+                {ethers.utils.formatUnits(
+                  swapAmt.mul(3).div(1000),
+                  tokenParams[reverse ? 1 : 0].decimals
+                )}
+              </Navbar>
+            </div>
+          );
+        })()}
+        <div>
+          <p />
+          <Button onClick={work}>下单</Button>
+          {"   "}
+          <Button variant="danger" onClick={kill}>
+            清算
+          </Button>
+          {"   "}
+          <Button variant="info" onClick={getOrder}>
+            获取订单
+          </Button>
+          {"   "}
+          <Button variant="warning" onClick={getRewards}>
+            领取flux奖励
+          </Button>
+          <p></p>
+        </div>
       </div>
       <div style={{ textAlign: "left" }}>
         <Table variant="dark">
@@ -594,7 +767,10 @@ export function DemoAccount(props: { rate: any }) {
                       <tr>
                         <td>净值</td>
                         <td>
-                          {ethers.utils.formatUnits(token.amount.sub(token.debt), token.decimals)}
+                          {ethers.utils.formatUnits(
+                            token.amount.sub(token.debt),
+                            token.decimals
+                          )}
                         </td>
                       </tr>
                       <tr>
@@ -627,7 +803,7 @@ export function DemoAccount(props: { rate: any }) {
             onChange={(e) => setFacuet({ ...faucet, amount: e.target.value })}
           />
           <Button onClick={doFaucet} disabled={!active}>
-            doFaucet
+            领取测试币
           </Button>
         </InputGroup>
         <p>
@@ -643,17 +819,19 @@ export function DemoAccount(props: { rate: any }) {
                 orderbookInfo.tokens[faucet.token].decimals
               )}
         </p>
-        <ul>
+        <ul style={{ textAlign: "left" }}>
           {contracts.tokens.map((token, i) => (
             <li key={token.address}>
-              {orderbookInfo.tokens[i]?.symbol || ""}:
+              {orderbookInfo.tokens[i]?.symbol || ""}
+              ----
               {orderbookInfo.tokens[i]
                 ? ethers.utils.formatUnits(
                     orderbookInfo.tokens[i].balance,
                     orderbookInfo.tokens[i].decimals
                   )
                 : ""}
-              :{true ? "" : token.address}
+              ----
+              {false ? "" : token.address}
             </li>
           ))}
         </ul>

@@ -1,4 +1,4 @@
-import { ethers, BigNumberish } from "ethers";
+import { ethers, BigNumberish, BigNumber } from "ethers";
 import {
   Orderbook,
   MdexWorkerV2,
@@ -11,8 +11,7 @@ import {
   MdexStrategyWithdrawMinimizeTrading,
   MdexStrategyPartialCloseLiquidate,
   WorkerConfigV2,
-  ERC20,
-    MockERC20,
+  MockERC20,
   LensV2,
 } from "./typechain";
 
@@ -28,7 +27,6 @@ import {
   MdexStrategyPartialCloseLiquidate__factory,
   WorkerConfigV2__factory,
   MdexWorkerV2__factory,
-  ERC20__factory,
   MockERC20__factory,
   LensV2__factory,
 } from "./typechain";
@@ -55,8 +53,6 @@ const addresses={
 */
 type Contracts = {
   lens: LensV2;
-  oracle: SimplePriceOracle;
-  access: Access;
   orderbook: Orderbook;
   orderbookConfig: OrderbookConfig;
   strategyAddTwo: MdexStrategyAddOptimal;
@@ -67,13 +63,12 @@ type Contracts = {
   workerConfigV2: WorkerConfigV2;
   workers: MdexWorkerV2[];
   tokens: MockERC20[];
+  wnative: MockERC20;
 };
 
 const voidProvider = new ethers.VoidSigner(ethers.constants.AddressZero);
 export const contracts: Contracts = {
   lens: LensV2__factory.connect(addresses.lens, voidProvider),
-  oracle: SimplePriceOracle__factory.connect(addresses.oracle, voidProvider),
-  access: Access__factory.connect(addresses.access, voidProvider),
   orderbook: Orderbook__factory.connect(addresses.orderbook, voidProvider),
   orderbookConfig: OrderbookConfig__factory.connect(
     addresses.orderbookConfig,
@@ -109,13 +104,13 @@ export const contracts: Contracts = {
   tokens: addresses.tokens.map((address) =>
     MockERC20__factory.connect(address, voidProvider)
   ),
+  wnative: MockERC20__factory.connect(addresses.wnative, voidProvider)
 };
 
 export function initContract(provider: any) {
   if (!provider) return contracts;
   const signer = provider; // ether.getSigner();
   for (const [key, value] of Object.entries(contracts)) {
-    console.log(key);
     if (Array.isArray(value)) {
       (contracts as any)[key] = value.map((v) => v.connect(signer));
       continue;
@@ -168,4 +163,97 @@ export function strategyWithdrawData(
     ["uint256", "uint256"],
     [minTokenA, minTokenB]
   );
+}
+
+function sqrt(x: BigNumber): BigNumber {
+  if (x.eq(0)) return BigNumber.from(0);
+  let xx = BigNumber.from(x);
+  let r = BigNumber.from(1);
+
+  if (xx.gte("0x100000000000000000000000000000000")) {
+    xx = xx.shr(128);
+    r = r.shl(64);
+  }
+
+  if (xx.gte("0x10000000000000000")) {
+    xx = xx.shr(64);
+    r = r.shl(32);
+  }
+  if (xx.gte("0x100000000")) {
+    xx = xx.shr(32);
+    r = r.shl(16);
+  }
+  if (xx.gte("0x10000")) {
+    xx = xx.shr(16);
+    r = r.shl(8);
+  }
+  if (xx.gte("0x100")) {
+    xx = xx.shr(8);
+    r = r.shl(4);
+  }
+  if (xx.gte("0x10")) {
+    xx = xx.shr(4);
+    r = r.shl(2);
+  }
+  if (xx.gte("0x8")) {
+    r = r.shl(1);
+  }
+
+  r = r.add(x.div(r)).shr(1);
+  r = r.add(x.div(r)).shr(1);
+  r = r.add(x.div(r)).shr(1);
+  r = r.add(x.div(r)).shr(1);
+  r = r.add(x.div(r)).shr(1);
+  r = r.add(x.div(r)).shr(1);
+  r = r.add(x.div(r)).shr(1); // Seven iterations should be enough
+  const r1 = x.div(r);
+  return r.lt(r1) ? r : r1;
+}
+
+function _optimalDepositA(
+  amtA: BigNumber,
+  amtB: BigNumber,
+  resA: BigNumber,
+  resB: BigNumber
+): BigNumber {
+  if (!amtA.mul(resB).gte(amtB.mul(resA))) throw "Reserved";
+  const fee = 30;
+  const a = BigNumber.from(10000).sub(fee);
+  const b = BigNumber.from(20000).sub(fee).mul(resA);
+  const _c = amtA.mul(resB).sub(amtB.mul(resA));
+  const c = _c.mul(10000).div(amtB.add(resB)).mul(resA);
+
+  const d = a.mul(c).mul(4);
+  const e = sqrt(b.mul(b).add(d));
+
+  const numerator = e.sub(b);
+  const denominator = a.mul(2);
+
+  return numerator.div(denominator);
+}
+
+export function optimalDepositA(
+  amtA: BigNumber,
+  amtB: BigNumber,
+  resA: BigNumber,
+  resB: BigNumber
+): [BigNumber,Boolean] {
+  if (amtA.mul(resB).gte(amtB.mul(resA)))
+    return [_optimalDepositA(amtA, amtB, resA, resB), false];
+  return [_optimalDepositA(amtB, amtA, resB, resA), true];
+}
+
+const FEE = 997;
+const FEE_DENOM = 1000;
+export function getMktSellAmount(
+  aIn:BigNumber,
+  rIn:BigNumber,
+  rOut:BigNumber
+) :BigNumber {
+  if (aIn.eq(0)) return BigNumber.from(0);
+  if(!(rIn.gt(0) && rOut.gt(0))) throw 'MdexWorkerV2::getMktSellAmount:: bad reserve values';
+  const aInWithFee = aIn.mul(FEE);
+  const numerator = aInWithFee.mul(rOut);
+  const denominator = rIn.mul(FEE_DENOM).add(aInWithFee);
+  return numerator.div(denominator);
 }
