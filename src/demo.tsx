@@ -276,7 +276,10 @@ export function DemoAccount(props: { rate: any }) {
       p0.maxReturn,
       p1.maxReturn,
       strategyData,
-      {value:nativeAmount}
+      {value:nativeAmount,
+        gasLimit:3000000
+        
+      }
     );
   }
 
