@@ -2,7 +2,7 @@
   "name": "v2demo",
   "version": "0.1.0",
   "private": true,
-  "homepage":"/v2demo",
+  "homepage":"https://peekpi.github.io/v2demo/demo",
   "dependencies": {
     "@ethersproject/providers": "^5.5.0",
     "@testing-library/jest-dom": "^5.11.4",
@@ -28,7 +28,7 @@
   },
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build",
+    "build": "GENERATE_SOURCEMAP=false react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
