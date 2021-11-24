@@ -12,7 +12,7 @@ function App() {
         <DemoAccount rate={(n:number) =>setPeriod(n)}></DemoAccount>
       </header>
       <body>
-        <iframe width="768" height="432" src="https://miro.com/app/live-embed/o9J_lgimEbI=/?moveToViewport=-651,-291,1262,581" frameBorder="0" scrolling="no" allowFullScreen></iframe></body>
+        <iframe width="90%" height="800" src="https://miro.com/app/live-embed/o9J_lgimEbI=/?moveToViewport=-651,-291,1262,581" frameBorder="0" scrolling="no" allowFullScreen></iframe></body>
     </div>
   );
 }
