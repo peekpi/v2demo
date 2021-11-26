@@ -3,9 +3,12 @@ import { useEagerConnect } from "./hooks";
 import { MetaMask } from "./wallet";
 import { ethers, BigNumber } from "ethers";
 import {
+  getAmountIn,
+  getAmountOut,
   getMktSellAmount,
   initContract,
   optimalDepositA,
+  quote,
   strategyAddTwoData,
   strategyClosePartData,
   strategyWithdrawData,
@@ -276,7 +279,9 @@ export function DemoAccount(props: { rate: any }) {
       p0.maxReturn,
       p1.maxReturn,
       strategyData,
-      {value:nativeAmount}
+      {
+        value:nativeAmount
+      }
     );
   }
 
@@ -604,18 +609,32 @@ export function DemoAccount(props: { rate: any }) {
             const rx = [info.r0, info.r1];
             if (reverse) rx.reverse();
             const outAmt = getMktSellAmount(swapAmt, rx[0], rx[1]);
-            const path = [swapAmt, BigNumber.from(0).sub(outAmt)];
+            const path = [BigNumber.from(0).sub(swapAmt), outAmt];
             if (reverse) path.reverse();
-            valueDebt = getMktSellAmount(
-              debtA,
-              info.r0.add(path[0]),
-              info.r1.add(path[1])
-            ).add(debtB);
-            valueHealth = getMktSellAmount(
-              totalA.add(path[0]),
-              info.r0.add(path[0]),
-              info.r1.add(path[1])
-            ).add(totalB.add(path[1]));
+            const posA = totalA.add(path[0]);
+            const posB = totalB.add(path[1]);
+
+            console.log("pos_X:", Number(posA)/1e18,Number(posB)/1e18)
+            const r0 = info.r0.sub(path[0]);
+            const r1 = info.r1.sub(path[1]);
+            const sellPart = posA.gt(debtA) ? getAmountOut(posA.sub(debtA), r0, r1) : zero;
+            const debt = getAmountIn(debtA, r1, r0);
+            const debtPart = debtA.gt(posA) ? getAmountIn(posB, r1, r0) : debt;
+            valueDebt = debt.add(debtB);
+            valueHealth = sellPart.add(debtPart).add(posB);
+            console.log("reverse:", reverse)
+            console.log("path:", Number(path[0])/1e18,Number(path[1])/1e18)
+            console.log('r0:', Number(r0)/1e18)
+            console.log('r1:', Number(r1)/1e18)
+            console.log('debtA:',  Number(debtA)/1e18)
+            console.log('debtB:',  Number(debtB)/1e18)
+            console.log('totalA:',  Number(totalA)/1e18)
+            console.log('totalB:',  Number(totalB)/1e18)
+            console.log('debt:',  Number(debt)/1e18)
+            console.log('debtPart:',  Number(debtPart)/1e18)
+            console.log('valueDebt:',  Number(valueDebt)/1e18)
+            console.log('valueHealth:',  Number(valueHealth)/1e18)
+            console.log('sellPart:',  Number(sellPart)/1e18)
             ratio = valueHealth.gt(0)
               ? valueDebt.mul(10000).div(valueHealth).toNumber() / 100
               : 0;

@@ -104,7 +104,7 @@ export const contracts: Contracts = {
   tokens: addresses.tokens.map((address) =>
     MockERC20__factory.connect(address, voidProvider)
   ),
-  wnative: MockERC20__factory.connect(addresses.wnative, voidProvider)
+  wnative: MockERC20__factory.connect(addresses.wnative, voidProvider),
 };
 
 export function initContract(provider: any) {
@@ -237,7 +237,7 @@ export function optimalDepositA(
   amtB: BigNumber,
   resA: BigNumber,
   resB: BigNumber
-): [BigNumber,Boolean] {
+): [BigNumber, Boolean] {
   if (amtA.mul(resB).gte(amtB.mul(resA)))
     return [_optimalDepositA(amtA, amtB, resA, resB), false];
   return [_optimalDepositA(amtB, amtA, resB, resA), true];
@@ -246,14 +246,65 @@ export function optimalDepositA(
 const FEE = 997;
 const FEE_DENOM = 1000;
 export function getMktSellAmount(
-  aIn:BigNumber,
-  rIn:BigNumber,
-  rOut:BigNumber
-) :BigNumber {
+  aIn: BigNumber,
+  rIn: BigNumber,
+  rOut: BigNumber
+): BigNumber {
   if (aIn.eq(0)) return BigNumber.from(0);
-  if(!(rIn.gt(0) && rOut.gt(0))) throw 'MdexWorkerV2::getMktSellAmount:: bad reserve values';
+  if (!(rIn.gt(0) && rOut.gt(0)))
+    throw "MdexWorkerV2::getMktSellAmount:: bad reserve values";
   const aInWithFee = aIn.mul(FEE);
   const numerator = aInWithFee.mul(rOut);
   const denominator = rIn.mul(FEE_DENOM).add(aInWithFee);
   return numerator.div(denominator);
+}
+
+const sol_require = (cond: boolean, msg = "") => {
+  if (!cond) throw msg;
+};
+// given some amount of an asset and pair reserves, returns an equivalent amount of the other asset
+export function quote(
+  amountA: BigNumber,
+  reserveA: BigNumber,
+  reserveB: BigNumber
+) {
+  if(amountA.eq(0)) return BigNumber.from(0);
+  sol_require(
+    reserveA.gt(0) && reserveB.gt(0),
+    "PancakeLibrary: INSUFFICIENT_LIQUIDITY"
+  );
+  return amountA.mul(reserveB).div(reserveA);
+}
+
+// given an input amount of an asset and pair reserves, returns the maximum output amount of the other asset
+export function getAmountOut(
+  amountIn: BigNumber,
+  reserveIn: BigNumber,
+  reserveOut: BigNumber
+) {
+  if(amountIn.eq(0)) return BigNumber.from(0);
+  sol_require(
+    reserveIn.gt(0) && reserveOut.gt(0),
+    "PancakeLibrary: INSUFFICIENT_LIQUIDITY"
+  );
+  const amountInWithFee = amountIn.mul(FEE);
+  const numerator = amountInWithFee.mul(reserveOut);
+  const denominator = reserveIn.mul(FEE_DENOM).add(amountInWithFee);
+  return numerator.div(denominator);
+}
+
+// given an output amount of an asset and pair reserves, returns a sol_required input amount of the other asset
+export function getAmountIn(
+  amountOut: BigNumber,
+  reserveIn: BigNumber,
+  reserveOut: BigNumber
+) {
+  if(amountOut.eq(0)) return BigNumber.from(0);
+  sol_require(
+    reserveIn.gt(0) && reserveOut.gt(0),
+    "PancakeLibrary: INSUFFICIENT_LIQUIDITY"
+  );
+  const numerator = reserveIn.mul(amountOut).mul(FEE_DENOM);
+  const denominator = reserveOut.sub(amountOut).mul(FEE);
+  return numerator.div(denominator).add(1);
 }
