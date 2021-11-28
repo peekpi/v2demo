@@ -15,6 +15,10 @@ import {
   strategyClosePartData,
   strategyWithdrawData,
   health,
+  strategyAddSimu,
+  strategyCloseSimu,
+  strategyDecSimu,
+  SimuResult,
 } from "./contracts";
 import {
   Button,
@@ -585,115 +589,67 @@ export function DemoAccount(props: { rate: any }) {
               )
             ];
           const zero = BigNumber.from(0);
-          let debtA = tokenParams[0].debt;
-          let totalA = tokenParams[0].amount.add(debtA);
-          let maxRepayA = tokenParams[0].maxReturn;
-          let debtB = tokenParams[1].debt;
-          let totalB = tokenParams[1].amount.add(debtB);
-          let maxRepayB = tokenParams[1].maxReturn;
-          let backA = zero;
-          let backB = zero;
-          let posAmountA = zero;
-          let posAmountB = zero;
-          let posDebtA = zero;
-          let posDebtB = zero;
-          let posLP = zero;
-          if (workData.orderid == orderInfo.orderid) {
-            posDebtA = orderInfo.tokens[0].debt;
-            posAmountA = orderInfo.tokens[0].amount;
-            posDebtB = orderInfo.tokens[1].debt;
-            posAmountB = orderInfo.tokens[1].amount;
-            posLP = orderInfo.lpAmount;
-          }
-          let swapAmt = zero;
-          let reverse = false;
-          let valueDebt = zero;
-          let valueHealth = zero;
-          let ratio = 0;
+          const orderData = workData.orderid == orderInfo.orderid ? {
+            debt0: orderInfo.tokens[0].debt,
+            debt1: orderInfo.tokens[1].debt,
+            lpAmount: orderInfo.lpAmount,
+          } : {
+            debt0: zero,
+            debt1: zero,
+            lpAmount: zero,
+          };
+          const lpinfo = {
+            totalSupply: info.lpTotalSupply,
+            r0: info.r0,
+            r1: info.r1,
+          };
+          const baseParams = tokenParams.map(param=>({
+            amount:param.amount,
+            debt: param.debt,
+            maxReturn: param.maxReturn,
+          }))
+          let result = {} as SimuResult;
           if (workData.strategyType == 1) {
-            [swapAmt, reverse] = optimalDepositA(
-              totalA,
-              totalB,
-              info.r0,
-              info.r1
-            );
-            console.log("reverse:", reverse, Number(swapAmt)/1e18)
-            console.log("totalA:", Number(totalA)/1e18)
-            console.log("totalB:", Number(totalB)/1e18)
-            console.log("info.r0:", Number(info.r0)/1e18)
-            console.log("info.r1:", Number(info.r1)/1e18)
-            const rx = [info.r0, info.r1];
-            if (reverse) rx.reverse();
-            const outAmt = getMktSellAmount(swapAmt, rx[0], rx[1]);
-            const path = [BigNumber.from(0).sub(swapAmt), outAmt];
-            if (reverse) path.reverse();
-            const r0 = info.r0.sub(path[0]);
-            const r1 = info.r1.sub(path[1]);
-            const deltaLP = addLp(totalA.add(path[0]), totalB.add(path[1]), info.lpTotalSupply, r0, r1);
-            [valueDebt, valueHealth] = health(posDebtA.add(debtA), posDebtB.add(debtB), posLP.add(deltaLP), info.lpTotalSupply.add(deltaLP), info.r0.add(totalA), info.r1.add(totalB))
-            ratio = valueHealth.gt(0)
-              ? valueDebt.mul(10000).div(valueHealth).toNumber() / 100
-              : 0;
+             result = strategyAddSimu(orderData, lpinfo, baseParams, strategyDatas.strategyData1);
           }else if(workData.strategyType == 2) {
-            console.log("totalA:", Number(totalA)/1e18)
-            console.log("totalB:", Number(totalB)/1e18)
-            console.log("posAmountA:", Number(posAmountA)/1e18)
-            console.log("posAmountA:", Number(posAmountA)/1e18)
-            console.log("debtA:", Number(debtA)/1e18)
-            console.log("debtB:", Number(debtB)/1e18)
-            let outAmt = zero;
-            posAmountA = posAmountA.add(tokenParams[0].amount)
-            posAmountB = posAmountB.add(tokenParams[1].amount)
-            posDebtA = posDebtA.add(debtA)
-            posDebtB = posDebtB.add(debtB)
-            if(posAmountA.lt(posDebtA)) {
-              reverse = true;
-              outAmt = posDebtA.sub(posAmountA);
-            } else {
-              outAmt = posDebtB.sub(posAmountB);
-            }
-            const r0 = info.r0.sub(posAmountA);
-            const r1 = info.r1.sub(posAmountB);
-            console.log("rX:", Number(r0)/1e18,  Number(r1)/1e18)
-            const path = [r0, r1];
-            if(reverse) path.reverse();
-            swapAmt = getAmountIn(outAmt, path[0], path[1])
-            console.log("out:", Number(outAmt)/1e18, reverse,  Number(swapAmt)/1e18)
-            ratio = 0
+             result = strategyCloseSimu(orderData, lpinfo, baseParams, strategyDatas.strategyData2);
           }else if (workData.strategyType == 3) {
-            const decLP = strategyDatas.strategyData3;
-            const [decA, decB] = deLpAmount(decLP, info.lpTotalSupply, info.r0, info.r1)
-            const min = (a:BigNumber,b:BigNumber)=>a.lt(b)? a : b;
-            backA = decA.add(tokenParams[0].amount)
-            backB = decB.add(tokenParams[1].amount)
-            posDebtA = posDebtA.add(debtA)
-            posDebtB = posDebtB.add(debtB)
-            let repayA = min(min(backA, maxRepayA), posDebtA);
-            let repayB = min(min(backB, maxRepayB), posDebtB);
-            const newDebtA = posDebtA.sub(repayA);
-            const newDebtB = posDebtB.sub(repayB);
-            [valueDebt, valueHealth] = health(newDebtA, newDebtB, posLP.sub(decLP), info.lpTotalSupply.sub(decLP), info.r0.sub(decA), info.r1.add(decB))
-            ratio = valueHealth.gt(0)
-              ? valueDebt.mul(10000).div(valueHealth).toNumber() / 100
-              : 0;
+             result = strategyDecSimu(orderData, lpinfo, baseParams, strategyDatas.strategyData3);
           }
+
+          let _window: any = window;
+          _window.result = result;
+          console.log("result:", result)
 
           return (
             <div>
               <Navbar expand="lg" variant="dark">
-                债务率：{ratio}%
+                债务率：{result.ratio}%
               </Navbar>
               <Navbar expand="lg" variant="dark">
                 卖出:
                 {ethers.utils.formatUnits(
-                  swapAmt,
-                  tokenParams[reverse ? 1 : 0].decimals
+                  result.swapAmt,
+                  tokenParams[result.reverse ? 1 : 0].decimals
                 )}{" "}
-                {tokenParams[reverse ? 1 : 0].symbol} 手续费:
+                {tokenParams[result.reverse ? 1 : 0].symbol} 手续费:
                 {ethers.utils.formatUnits(
-                  swapAmt.mul(3).div(1000),
-                  tokenParams[reverse ? 1 : 0].decimals
+                  result.swapAmt.mul(3).div(1000),
+                  tokenParams[result.reverse ? 1 : 0].decimals
                 )}
+              </Navbar>
+              <Navbar expand="lg" variant="dark">
+                返回: {ethers.utils.formatUnits(
+                  result.back0,
+                  tokenParams[0].decimals
+                )}{" "}
+                {tokenParams[0].symbol}
+                {" "}
+                {ethers.utils.formatUnits(
+                  result.back1,
+                  tokenParams[1].decimals
+                )}{" "}
+                {tokenParams[1].symbol}
               </Navbar>
             </div>
           );

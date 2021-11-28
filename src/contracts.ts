@@ -332,3 +332,158 @@ export function health(debt0:BigNumber, debt1:BigNumber, lpAmount:BigNumber, tot
   const valueHealth = sellPart.add(debtPart).add(posB);
   return [valueDebt, valueHealth];
 }
+
+export type OrderData = {
+  debt0: BigNumber;
+  debt1: BigNumber;
+  lpAmount: BigNumber;
+}
+
+export type LpInfo = {
+  totalSupply: BigNumber;
+  r0: BigNumber;
+  r1: BigNumber;
+}
+
+export type BaseParam = {
+  amount:BigNumber;
+  debt: BigNumber;
+  maxReturn: BigNumber;
+}
+
+export type SimuResult = {
+  ratio: Number; // 债务率(0-100)
+  debt0: BigNumber; // 债务(token0)
+  debt1: BigNumber; // 债务(token1)
+  pos0: BigNumber; // 持仓(token0)
+  pos1: BigNumber; // 持仓(token1)
+  lpAmount: BigNumber; // 持仓(lp)
+  swapAmt: BigNumber; // 交易数量
+  reverse: boolean; // 交易方向 false: token0->token1 true: token1->token0
+  back0: BigNumber; // 用户得到(token0)
+  back1: BigNumber; // 用户得到(token1)
+}
+
+export function strategyAddSimu(order:OrderData, lp:LpInfo, params:BaseParam[], minLPAmount: BigNumberish):SimuResult {
+  const param0 = params[0];
+  const param1 = params[1];
+  const totalA = param0.amount.add(param0.debt);
+  const totalB = param1.amount.add(param1.debt);
+  const [swapAmt, reverse] = optimalDepositA(
+    totalA,
+    totalB,
+    lp.r0,
+    lp.r1
+  );
+  const rx = [lp.r0, lp.r1];
+  if (reverse) rx.reverse();
+  const outAmt = getAmountOut(swapAmt, rx[0], rx[1]);
+  const deltaRx = [BigNumber.from(0).sub(swapAmt), outAmt];
+  if (reverse) deltaRx.reverse();
+  const r0 = lp.r0.sub(deltaRx[0]);
+  const r1 = lp.r1.sub(deltaRx[1]);
+  const deltaLP = addLp(totalA.add(deltaRx[0]), totalB.add(deltaRx[1]), lp.totalSupply, r0, r1);
+  const final = {
+    debt0: order.debt0.add(param0.debt),
+    debt1: order.debt1.add(param1.debt),
+    orderLp: order.lpAmount.add(deltaLP),
+    lpTotalsupply: lp.totalSupply.add(deltaLP),
+    r0: lp.r0.add(totalA),
+    r1: lp.r1.add(totalB),
+    pos0:ZERO,
+    pos1:ZERO,
+  }
+  const [valueDebt, valueHealth] = health(final.debt0, final.debt1, final.orderLp, final.lpTotalsupply, final.r0, final.r1);
+  const ratio = valueHealth.gt(0)
+    ? valueDebt.mul(10000).div(valueHealth).toNumber() / 100
+    : 0;
+  [final.pos0, final.pos1] = deLpAmount(final.orderLp, final.lpTotalsupply, final.r0, final.r1);
+  return {
+    ratio: ratio,
+    debt0: final.debt0,
+    debt1: final.debt1,
+    pos0: final.pos0,
+    pos1: final.pos1,
+    lpAmount: final.orderLp,
+    swapAmt,
+    reverse,
+    back0:ZERO,
+    back1: ZERO,
+  }
+}
+export function strategyCloseSimu(order:OrderData, lp:LpInfo, params:BaseParam[], minBack: BigNumberish[]):SimuResult {
+  const param0 = params[0];
+  const param1 = params[1];
+  const [pos0, pos1] = deLpAmount(order.lpAmount, lp.totalSupply, lp.r0, lp.r1);
+  const totalPos0 = param0.amount.add(pos0);
+  const totalPos1 = param1.amount.add(pos1);
+  const totalPosDebt0 = param0.debt.add(order.debt0);
+  const totalPosDebt1 = param1.debt.add(order.debt1);
+  let reverse = false;
+  let outAmt = ZERO;
+  if(totalPos0.lt(totalPosDebt0)) {
+    reverse = true;
+    outAmt = totalPosDebt0.sub(totalPos0);
+  } else if(totalPos1.lt(totalPosDebt1)) {
+    outAmt = totalPosDebt1.sub(totalPos1);
+  }
+
+  const r0 = lp.r0.sub(totalPos0);
+  const r1 = lp.r1.sub(totalPos1);
+  const path = [r0, r1];
+  if(reverse) path.reverse();
+  const swapAmt = getAmountIn(outAmt, path[0], path[1]);
+  const delta = [ZERO.sub(swapAmt), outAmt];
+  if(reverse) delta.reverse();
+  return {
+    ratio: 0,
+    debt0: ZERO,
+    debt1: ZERO,
+    pos0: ZERO,
+    pos1: ZERO,
+    lpAmount: ZERO,
+    swapAmt,
+    reverse,
+    back0: totalPos0.add(delta[0]).sub(totalPosDebt0),
+    back1: totalPos1.add(delta[1]).sub(totalPosDebt1),
+  }
+}
+export function strategyDecSimu(order:OrderData, lp:LpInfo, params:BaseParam[], lpDec: BigNumber) {
+  const param0 = params[0];
+  const param1 = params[1];
+  const [decA, decB] = deLpAmount(lpDec, lp.totalSupply, lp.r0, lp.r1)
+  const min = (a:BigNumber,b:BigNumber)=>a.lt(b)? a : b;
+  const backA = decA.add(param0.amount)
+  const backB = decB.add(param1.amount)
+  const posDebtA = order.debt0.add(param0.debt)
+  const posDebtB = order.debt1.add(param1.debt)
+  let repayA = min(min(backA, param0.maxReturn), posDebtA);
+  let repayB = min(min(backB, param1.maxReturn), posDebtB);
+  const final = {
+    debt0: posDebtA.sub(repayA),
+    debt1: posDebtB.sub(repayB),
+    orderLp: order.lpAmount.sub(lpDec),
+    lpTotalsupply: lp.totalSupply.sub(lpDec),
+    r0: lp.r0.sub(decA),
+    r1: lp.r1.sub(decB),
+    pos0:ZERO,
+    pos1:ZERO,
+  }
+  const [valueDebt, valueHealth] = health(final.debt0, final.debt1, final.orderLp, final.lpTotalsupply, final.r0, final.r1);
+  [final.pos0, final.pos1] = deLpAmount(final.orderLp, final.lpTotalsupply, final.r0, final.r1);
+  const ratio = valueHealth.gt(0)
+    ? valueDebt.mul(10000).div(valueHealth).toNumber() / 100
+    : valueDebt.gt(0)?100:0;
+  return {
+    ratio: ratio,
+    debt0: final.debt0,
+    debt1: final.debt1,
+    pos0: final.pos0,
+    pos1: final.pos1,
+    lpAmount: final.orderLp,
+    swapAmt: ZERO,
+    reverse: false,
+    back0: backA.sub(repayA),
+    back1: backB.sub(repayB),
+  }
+}
