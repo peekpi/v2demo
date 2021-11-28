@@ -166,7 +166,7 @@ export function strategyWithdrawData(
 }
 
 function sqrt(x: BigNumber): BigNumber {
-  if (x.eq(0)) return BigNumber.from(0);
+  if (x.eq(0)) return ZERO;
   let xx = BigNumber.from(x);
   let r = BigNumber.from(1);
 
@@ -231,13 +231,13 @@ function _optimalDepositA(
 
   return numerator.div(denominator);
 }
-
+const ZERO = ethers.constants.Zero;
 export function optimalDepositA(
   amtA: BigNumber,
   amtB: BigNumber,
   resA: BigNumber,
   resB: BigNumber
-): [BigNumber, Boolean] {
+): [BigNumber, boolean] {
   if (amtA.mul(resB).gte(amtB.mul(resA)))
     return [_optimalDepositA(amtA, amtB, resA, resB), false];
   return [_optimalDepositA(amtB, amtA, resB, resA), true];
@@ -250,7 +250,7 @@ export function getMktSellAmount(
   rIn: BigNumber,
   rOut: BigNumber
 ): BigNumber {
-  if (aIn.eq(0)) return BigNumber.from(0);
+  if (aIn.eq(0)) return ZERO;
   if (!(rIn.gt(0) && rOut.gt(0)))
     throw "MdexWorkerV2::getMktSellAmount:: bad reserve values";
   const aInWithFee = aIn.mul(FEE);
@@ -268,7 +268,7 @@ export function quote(
   reserveA: BigNumber,
   reserveB: BigNumber
 ) {
-  if(amountA.eq(0)) return BigNumber.from(0);
+  if(amountA.lte(0)) return ZERO;
   sol_require(
     reserveA.gt(0) && reserveB.gt(0),
     "PancakeLibrary: INSUFFICIENT_LIQUIDITY"
@@ -282,7 +282,7 @@ export function getAmountOut(
   reserveIn: BigNumber,
   reserveOut: BigNumber
 ) {
-  if(amountIn.eq(0)) return BigNumber.from(0);
+  if(amountIn.lte(0)) return ZERO;
   sol_require(
     reserveIn.gt(0) && reserveOut.gt(0),
     "PancakeLibrary: INSUFFICIENT_LIQUIDITY"
@@ -299,7 +299,7 @@ export function getAmountIn(
   reserveIn: BigNumber,
   reserveOut: BigNumber
 ) {
-  if(amountOut.eq(0)) return BigNumber.from(0);
+  if(amountOut.lte(0)) return ZERO;
   sol_require(
     reserveIn.gt(0) && reserveOut.gt(0),
     "PancakeLibrary: INSUFFICIENT_LIQUIDITY"
@@ -307,4 +307,28 @@ export function getAmountIn(
   const numerator = reserveIn.mul(amountOut).mul(FEE_DENOM);
   const denominator = reserveOut.sub(amountOut).mul(FEE);
   return numerator.div(denominator).add(1);
+}
+
+export function deLpAmount(lpAmount:BigNumber, totalLp:BigNumber, r0:BigNumber, r1:BigNumber) {
+  return [lpAmount.mul(r0).div(totalLp), lpAmount.mul(r1).div(totalLp)];
+}
+
+
+export function addLp(in0:BigNumber, in1:BigNumber, totalLp:BigNumber, r0:BigNumber, r1:BigNumber) {
+  if(in0.mul(r1).gt(in1.mul(r0))) {
+    return in1.mul(totalLp).div(r1);
+  }
+  return in0.mul(totalLp).div(r0);
+}
+
+export function health(debt0:BigNumber, debt1:BigNumber, lpAmount:BigNumber, totalLp:BigNumber, r0:BigNumber, r1:BigNumber) {
+  const [posA, posB] = deLpAmount(lpAmount, totalLp, r0, r1)
+  const r1Predict = r1.sub(posB);
+  const r0Predict = r0.sub(posA);
+  const sellPart = posA.gt(debt0) ? getAmountOut(posA.sub(debt0), r0Predict, r1Predict) : ZERO;
+  const equiDebtB = getAmountIn(debt0, r1Predict, r0Predict);
+  const debtPart = debt0.gt(posA) ? getAmountIn(posA, r1Predict, r0Predict) : equiDebtB;
+  const valueDebt = equiDebtB.add(debt1);
+  const valueHealth = sellPart.add(debtPart).add(posB);
+  return [valueDebt, valueHealth];
 }

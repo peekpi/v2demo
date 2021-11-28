@@ -9,9 +9,12 @@ import {
   initContract,
   optimalDepositA,
   quote,
+  deLpAmount,
+  addLp,
   strategyAddTwoData,
   strategyClosePartData,
   strategyWithdrawData,
+  health,
 } from "./contracts";
 import {
   Button,
@@ -584,18 +587,26 @@ export function DemoAccount(props: { rate: any }) {
           const zero = BigNumber.from(0);
           let debtA = tokenParams[0].debt;
           let totalA = tokenParams[0].amount.add(debtA);
+          let maxRepayA = tokenParams[0].maxReturn;
           let debtB = tokenParams[1].debt;
           let totalB = tokenParams[1].amount.add(debtB);
+          let maxRepayB = tokenParams[1].maxReturn;
           let backA = zero;
           let backB = zero;
+          let posAmountA = zero;
+          let posAmountB = zero;
+          let posDebtA = zero;
+          let posDebtB = zero;
+          let posLP = zero;
           if (workData.orderid == orderInfo.orderid) {
-            debtA = debtA.add(orderInfo.tokens[0].debt);
-            totalA = totalA.add(orderInfo.tokens[0].amount);
-            debtB = debtB.add(orderInfo.tokens[1].debt);
-            totalB = totalB.add(orderInfo.tokens[1].amount);
+            posDebtA = orderInfo.tokens[0].debt;
+            posAmountA = orderInfo.tokens[0].amount;
+            posDebtB = orderInfo.tokens[1].debt;
+            posAmountB = orderInfo.tokens[1].amount;
+            posLP = orderInfo.lpAmount;
           }
           let swapAmt = zero;
-          let reverse: Boolean = false;
+          let reverse = false;
           let valueDebt = zero;
           let valueHealth = zero;
           let ratio = 0;
@@ -606,48 +617,65 @@ export function DemoAccount(props: { rate: any }) {
               info.r0,
               info.r1
             );
+            console.log("reverse:", reverse, Number(swapAmt)/1e18)
+            console.log("totalA:", Number(totalA)/1e18)
+            console.log("totalB:", Number(totalB)/1e18)
+            console.log("info.r0:", Number(info.r0)/1e18)
+            console.log("info.r1:", Number(info.r1)/1e18)
             const rx = [info.r0, info.r1];
             if (reverse) rx.reverse();
             const outAmt = getMktSellAmount(swapAmt, rx[0], rx[1]);
             const path = [BigNumber.from(0).sub(swapAmt), outAmt];
             if (reverse) path.reverse();
-            const posA = totalA.add(path[0]);
-            const posB = totalB.add(path[1]);
-
-            console.log("pos_X:", Number(posA)/1e18,Number(posB)/1e18)
             const r0 = info.r0.sub(path[0]);
             const r1 = info.r1.sub(path[1]);
-            const sellPart = posA.gt(debtA) ? getAmountOut(posA.sub(debtA), r0, r1) : zero;
-            const debt = getAmountIn(debtA, r1, r0);
-            const debtPart = debtA.gt(posA) ? getAmountIn(posB, r1, r0) : debt;
-            valueDebt = debt.add(debtB);
-            valueHealth = sellPart.add(debtPart).add(posB);
-            console.log("reverse:", reverse)
-            console.log("path:", Number(path[0])/1e18,Number(path[1])/1e18)
-            console.log('r0:', Number(r0)/1e18)
-            console.log('r1:', Number(r1)/1e18)
-            console.log('debtA:',  Number(debtA)/1e18)
-            console.log('debtB:',  Number(debtB)/1e18)
-            console.log('totalA:',  Number(totalA)/1e18)
-            console.log('totalB:',  Number(totalB)/1e18)
-            console.log('debt:',  Number(debt)/1e18)
-            console.log('debtPart:',  Number(debtPart)/1e18)
-            console.log('valueDebt:',  Number(valueDebt)/1e18)
-            console.log('valueHealth:',  Number(valueHealth)/1e18)
-            console.log('sellPart:',  Number(sellPart)/1e18)
+            const deltaLP = addLp(totalA.add(path[0]), totalB.add(path[1]), info.lpTotalSupply, r0, r1);
+            [valueDebt, valueHealth] = health(posDebtA.add(debtA), posDebtB.add(debtB), posLP.add(deltaLP), info.lpTotalSupply.add(deltaLP), info.r0.add(totalA), info.r1.add(totalB))
             ratio = valueHealth.gt(0)
               ? valueDebt.mul(10000).div(valueHealth).toNumber() / 100
               : 0;
           }else if(workData.strategyType == 2) {
-            if(totalA.lt(debtA)) {
+            console.log("totalA:", Number(totalA)/1e18)
+            console.log("totalB:", Number(totalB)/1e18)
+            console.log("posAmountA:", Number(posAmountA)/1e18)
+            console.log("posAmountA:", Number(posAmountA)/1e18)
+            console.log("debtA:", Number(debtA)/1e18)
+            console.log("debtB:", Number(debtB)/1e18)
+            let outAmt = zero;
+            posAmountA = posAmountA.add(tokenParams[0].amount)
+            posAmountB = posAmountB.add(tokenParams[1].amount)
+            posDebtA = posDebtA.add(debtA)
+            posDebtB = posDebtB.add(debtB)
+            if(posAmountA.lt(posDebtA)) {
               reverse = true;
+              outAmt = posDebtA.sub(posAmountA);
+            } else {
+              outAmt = posDebtB.sub(posAmountB);
             }
-            if (totalB.lt(debtB)) {
-              reverse = false;
-            }
+            const r0 = info.r0.sub(posAmountA);
+            const r1 = info.r1.sub(posAmountB);
+            console.log("rX:", Number(r0)/1e18,  Number(r1)/1e18)
+            const path = [r0, r1];
+            if(reverse) path.reverse();
+            swapAmt = getAmountIn(outAmt, path[0], path[1])
+            console.log("out:", Number(outAmt)/1e18, reverse,  Number(swapAmt)/1e18)
+            ratio = 0
           }else if (workData.strategyType == 3) {
-            backA = strategyDatas.strategyData3.mul(info.r0).div(info.lpTotalSupply)
-            backB = strategyDatas.strategyData3.mul(info.r1).div(info.lpTotalSupply)
+            const decLP = strategyDatas.strategyData3;
+            const [decA, decB] = deLpAmount(decLP, info.lpTotalSupply, info.r0, info.r1)
+            const min = (a:BigNumber,b:BigNumber)=>a.lt(b)? a : b;
+            backA = decA.add(tokenParams[0].amount)
+            backB = decB.add(tokenParams[1].amount)
+            posDebtA = posDebtA.add(debtA)
+            posDebtB = posDebtB.add(debtB)
+            let repayA = min(min(backA, maxRepayA), posDebtA);
+            let repayB = min(min(backB, maxRepayB), posDebtB);
+            const newDebtA = posDebtA.sub(repayA);
+            const newDebtB = posDebtB.sub(repayB);
+            [valueDebt, valueHealth] = health(newDebtA, newDebtB, posLP.sub(decLP), info.lpTotalSupply.sub(decLP), info.r0.sub(decA), info.r1.add(decB))
+            ratio = valueHealth.gt(0)
+              ? valueDebt.mul(10000).div(valueHealth).toNumber() / 100
+              : 0;
           }
 
           return (
